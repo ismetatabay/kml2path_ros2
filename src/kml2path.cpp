@@ -26,15 +26,12 @@ using kmldom::CoordinatesPtr;
 using kmldom::KmlFactory;
 using kmldom::LineStringPtr;
 using kmldom::PlacemarkPtr;
-using kmldom::KmlPtr;
 using kmlengine::KmlFile;
 using kmlengine::KmlFilePtr;
 using std::cerr;
-using std::cout;
-using std::endl;
 
-// This FeatureVisitor collects any LineString coordinates contained in the
-// KmlFile and appends them to concatenated_coords.
+
+// This FeatureVisitor collects any LineString coordinates contained in the .kml file
 class LineStringVisitor : public kmlengine::FeatureVisitor 
 {
  public:
@@ -57,7 +54,6 @@ class LineStringVisitor : public kmlengine::FeatureVisitor
   // vector.
   virtual void VisitFeature(const kmldom::FeaturePtr& f) 
   {
-    pose_msg.header.frame_id = "map";
     path_msg.header.frame_id = "map";
     if (f->Type() == kmldom::Type_Placemark) {
       PlacemarkPtr p = kmldom::AsPlacemark(f);
@@ -72,12 +68,14 @@ class LineStringVisitor : public kmlengine::FeatureVisitor
         }
         if (ls->has_coordinates()) {
           CoordinatesPtr c = ls->get_coordinates();
+          // Create LocalCartesian projection on first point
           LocalCartesian proj(c->get_coordinates_array_at(0).get_latitude(), c->get_coordinates_array_at(0).get_longitude(),
                                c->get_coordinates_array_at(0).get_latitude(), earth_);
           for (size_t i = 1; i < c->get_coordinates_array_size(); ++i) {
             double x, y, z;
+            // Apply projection other points
             proj.Forward(c->get_coordinates_array_at(i).get_latitude(), c->get_coordinates_array_at(i).get_longitude(),
-                           c->get_coordinates_array_at(i).get_altitude(), x, y, z);
+                           c->get_coordinates_array_at(i).get_altitude(), x, y, z); 
             concatenated_coordinates_->add_vec3(c->get_coordinates_array_at(i));
             pose_msg.pose.position.x = x;
             pose_msg.pose.position.y = y;
@@ -99,17 +97,20 @@ class LineStringVisitor : public kmlengine::FeatureVisitor
   int altitudemode_;
 };
 
-
+// ROS2 Node 
 class KML2PATH : public rclcpp::Node
 {
 public:
   KML2PATH() : Node("kml2path_node") {
-  publisher_path = this->create_publisher<nav_msgs::msg::Path>("/path", 10);
+  publisher_path = this->create_publisher<nav_msgs::msg::Path>("nav_msgs/Path", 10);
+  // Parameter for file path.
+  this->declare_parameter<std::string>("kml_filepath", "src/kml2path_ros2/data/test.kml");
 
   KmlFilePtr kml_file = KML2PATH::read_kml_file();
   LineStringVisitor linestring_visitor = KML2PATH::parse_kml(kml_file);
   path_msg = linestring_visitor.path_msg;
   KML2PATH::path_publisher();
+  // Timer calls publisher function at every 500ms.
   timer_ = this->create_wall_timer(
       500ms, std::bind(&KML2PATH::path_publisher, this));
   }
@@ -117,20 +118,22 @@ public:
 private:
   KmlFilePtr read_kml_file()
   {
+    this->get_parameter("kml_filepath", kml_filepath);
     std::string kml_data;
-    if (!kmlbase::File::ReadFileToString("src/kml2path_ros2/data/test.kml", &kml_data)) {
-      cerr << "error: read of " << "test.kml" << " failed" << endl;
+    if (!kmlbase::File::ReadFileToString(kml_filepath, &kml_data)) {
+      cerr << "error: read of " << kml_filepath << " failed" << std::endl;
       return (0);
     }
 
     std::string errors;
     KmlFilePtr kml_file = KmlFile::CreateFromParse(kml_data, &errors);
     if (!kml_file || !errors.empty()) {
-      cerr << "parse failed: " << errors << endl;
+      cerr << "parse failed: " << errors << std::endl;
       return (0);
     }
     return kml_file;
   }
+  // Visit linestring and read coordinates
   LineStringVisitor parse_kml(const KmlFilePtr& kmlfile)
   {
     Geocentric earth(Constants::WGS84_a(), Constants::WGS84_f());
@@ -150,14 +153,14 @@ private:
     publisher_path->publish(path_msg);
 
   }
+  std::string kml_filepath;
   nav_msgs::msg::Path path_msg;
   rclcpp::TimerBase::SharedPtr timer_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr publisher_path;
 };
-
+// Main Function
 int main(int argc, char** argv) 
 {
-
   rclcpp::init(argc, argv);
   rclcpp::spin(std::make_shared<KML2PATH>());
   rclcpp::shutdown();
